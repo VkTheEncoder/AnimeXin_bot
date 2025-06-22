@@ -42,8 +42,9 @@ def search(update: Update, context: CallbackContext):
         return update.message.reply_text(f"🚫 No series found for “{query}”.")
 
     keyboard = [
-        [InlineKeyboardButton(item["title"], callback_data=f"series#{item['slug']}")]
+        [InlineKeyboardButton(item.get("title", "Unknown"), callback_data=f"series#{item.get('slug', '')}")]
         for item in series_list
+        if item.get("slug")
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text("Select a series:", reply_markup=reply_markup)
@@ -60,14 +61,22 @@ def series_callback(update: Update, context: CallbackContext):
         return query.edit_message_text("⚠️ Could not fetch series info.")
 
     title = info.get("title", slug)
-    episodes = info.get("episodes", [])
+    episodes = info.get("episodes") or info.get("data") or []
     if not episodes:
-        return query.edit_message_text(f"No episodes found for **{title}**.")
+        return query.edit_message_text(f"No episodes found for **{title}**.", parse_mode="Markdown")
 
-    keyboard = [
-        [InlineKeyboardButton(f"Episode {ep['number']}", callback_data=f"episode#{ep['slug']}")]
-        for ep in episodes
-    ]
+    keyboard = []
+    for idx, ep in enumerate(episodes, start=1):
+        # fallbacks for display text and slug
+        number = ep.get("number") or ep.get("episode") or idx
+        btn_text = ep.get("title") or f"Episode {number}"
+        ep_slug = ep.get("slug") or ep.get("ep_slug") or ep.get("url")
+        if not ep_slug:
+            continue
+        keyboard.append([
+            InlineKeyboardButton(btn_text, callback_data=f"episode#{ep_slug}")
+        ])
+
     reply = InlineKeyboardMarkup(keyboard)
     query.edit_message_text(
         f"**{title}**\nSelect an episode:",
@@ -109,7 +118,6 @@ def error_handler(update: object, context: CallbackContext):
     logger.error("Update caused error: %s", context.error)
     if update and getattr(update, "message", None):
         update.message.reply_text("😵 Oops, something went wrong.")
-    # Stop further propagation
     raise DispatcherHandlerStop()
 
 def main():
