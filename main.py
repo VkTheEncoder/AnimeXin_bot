@@ -1,10 +1,6 @@
 import logging
 import io
-import os
-import tempfile
-import subprocess
 import requests
-
 from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -14,7 +10,6 @@ from telegram.ext import (
     CallbackContext,
     DispatcherHandlerStop,
 )
-
 import config
 from utils import (
     search_series,
@@ -23,7 +18,6 @@ from utils import (
     extract_italian_subtitle_url,
 )
 
-# — Logging —
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -43,7 +37,7 @@ def search(update: Update, context: CallbackContext):
         series_list = search_series(query)
     except Exception as e:
         logger.error("Search error: %s", e)
-        return update.message.reply_text("⚠️ Error contacting API.")
+        return update.message.reply_text("⚠️ API error.")
 
     if not series_list:
         return update.message.reply_text(f"No results for “{query}.”")
@@ -59,10 +53,7 @@ def search(update: Update, context: CallbackContext):
         buttons.append([InlineKeyboardButton(title, callback_data=f"series#{i}")])
 
     context.user_data["series_map"] = series_map
-    update.message.reply_text(
-        "Select a series:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    update.message.reply_text("Select a series:", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 def series_callback(update: Update, context: CallbackContext):
@@ -89,8 +80,8 @@ def series_callback(update: Update, context: CallbackContext):
     ep_map, buttons = {}, []
     for i, ep in enumerate(eps):
         ep_slug = ep.get("ep_slug")
-        num    = ep.get("episode_number") or (i+1)
-        label  = ep.get("title") or f"Episode {num}"
+        num = ep.get("episode_number") or (i + 1)
+        label = ep.get("title") or f"Episode {num}"
         if not ep_slug:
             continue
         ep_map[str(i)] = ep_slug
@@ -100,7 +91,7 @@ def series_callback(update: Update, context: CallbackContext):
     query.edit_message_text(
         f"**{title}**\nSelect an episode:",
         reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 
@@ -117,7 +108,6 @@ def episode_callback(update: Update, context: CallbackContext):
         logger.error("Episode videos error: %s", e)
         return query.edit_message_text("⚠️ Failed to fetch videos.")
 
-    # Find the All Sub Player Dailymotion entry
     selected = next(
         (s for s in servers
          if s["server_name"].lower().startswith("all sub player dailymotion")),
@@ -127,12 +117,12 @@ def episode_callback(update: Update, context: CallbackContext):
         return query.edit_message_text("🚫 Dailymotion server not available.")
 
     video_url = selected["video_url"]
-    wrapper   = selected.get("embed_url") or selected.get("iframe_src") or video_url
+    wrapper = selected.get("embed_url") or selected.get("iframe_src") or video_url
 
-    # 1) Send the playback link
+    # 1) send the playback link
     query.message.reply_text(f"🎬 Video (Dailymotion)\n{video_url}")
 
-    # 2) Fetch & process subtitles
+    # 2) fetch the Italian subtitle URL (always .srt)
     sub_url = extract_italian_subtitle_url(wrapper)
     if not sub_url:
         return query.message.reply_text("⚠️ Italian subtitles not found.")
@@ -140,22 +130,17 @@ def episode_callback(update: Update, context: CallbackContext):
     try:
         r = requests.get(sub_url)
         r.raise_for_status()
-        # determine extension
-        path = urlparse(sub_url).path
-        ext  = os.path.splitext(path)[1].lower()
+        data = r.content
 
-        if ext == ".srt":
-            data = r.content
-        elif ext in (".vtt", ".webvtt"):
-            # convert VTT → SRT
+        # If it’s a VTT, convert quickly 
+        if sub_url.lower().endswith((".vtt", ".webvtt")):
             lines = r.text.splitlines()
             blocks, idx, i = [], 1, 0
             while i < len(lines):
                 line = lines[i].strip()
                 if "-->" in line:
                     start, end = line.split(" --> ")
-                    start = start.replace(".", ",")
-                    end   = end.replace(".", ",")
+                    start, end = start.replace(".", ","), end.replace(".", ",")
                     i += 1
                     text_lines = []
                     while i < len(lines) and lines[i].strip():
@@ -165,25 +150,6 @@ def episode_callback(update: Update, context: CallbackContext):
                     idx += 1
                 i += 1
             data = "\n\n".join(blocks).encode("utf-8")
-        elif ext == ".mp4":
-            # save MP4 → extract first subtitle track via ffmpeg
-            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmpvid:
-                tmpvid.write(r.content)
-            srt_path = tmpvid.name + ".srt"
-            # ffmpeg must be installed in your container!
-            subprocess.run([
-                "ffmpeg", "-y",
-                "-i", tmpvid.name,
-                "-map", "0:s:0",
-                srt_path
-            ], check=True)
-            with open(srt_path, "rb") as f:
-                data = f.read()
-            # cleanup
-            os.unlink(tmpvid.name)
-            os.unlink(srt_path)
-        else:
-            return query.message.reply_text(f"⚠️ Unsupported subtitle format: {ext}")
 
         # send back as .srt
         buf = io.BytesIO(data)
@@ -193,15 +159,16 @@ def episode_callback(update: Update, context: CallbackContext):
             filename="italian_subtitles.srt",
             caption="💬 Italian subtitles"
         )
+
     except Exception as e:
         logger.error("Subtitle processing error: %s", e)
-        query.message.reply_text("⚠️ Could not process subtitles.")
+        query.message.reply_text("⚠️ Could not download/process subtitles.")
 
 
 def error_handler(update: object, context: CallbackContext):
     logger.error("Unhandled error", exc_info=context.error)
     if update and getattr(update, "message", None):
-        update.message.reply_text("😵 Oops, something broke.")
+        update.message.reply_text("😵 Something went wrong.")
     raise DispatcherHandlerStop()
 
 
