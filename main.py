@@ -1,6 +1,8 @@
 # main.py
 
 import logging
+import io
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Updater,
@@ -10,16 +12,12 @@ from telegram.ext import (
     DispatcherHandlerStop,
 )
 import config
-from utils import (
-    search_series,
-    get_series_info,
-    get_episode_videos,
-    extract_italian_subtitle,
-)
+from utils import search_series, get_series_info, get_episode_videos, extract_italian_subtitle
 
-# — Logging —
+# — Logging setup —
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -39,13 +37,12 @@ def search(update: Update, context: CallbackContext):
     try:
         series_list = search_series(query)
     except Exception as e:
-        logger.exception("Search error")
+        logger.error("Search error: %s", e)
         return update.message.reply_text("⚠️ Error contacting animexin_api.")
 
     if not series_list:
         return update.message.reply_text(f"🚫 No series found for “{query}”.")
 
-    # map index → slug
     series_map = {}
     buttons = []
     for i, s in enumerate(series_list):
@@ -59,7 +56,8 @@ def search(update: Update, context: CallbackContext):
 
     context.user_data["series_map"] = series_map
     update.message.reply_text(
-        "Select a series:", reply_markup=InlineKeyboardMarkup(buttons)
+        "Select a series:",
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
@@ -75,7 +73,7 @@ def series_callback(update: Update, context: CallbackContext):
     try:
         info = get_series_info(slug)
     except Exception as e:
-        logger.exception("Series info error")
+        logger.error("Series info error: %s", e)
         return query.edit_message_text("⚠️ Could not fetch series info.")
 
     title = info.get("title") or slug
@@ -85,10 +83,10 @@ def series_callback(update: Update, context: CallbackContext):
 
     if not episodes:
         return query.edit_message_text(
-            f"No episodes found for **{title}**.", parse_mode="Markdown"
+            f"No episodes found for **{title}**.",
+            parse_mode="Markdown"
         )
 
-    # map index → ep_slug
     ep_map = {}
     buttons = []
     for i, ep in enumerate(episodes):
@@ -105,7 +103,7 @@ def series_callback(update: Update, context: CallbackContext):
     query.edit_message_text(
         f"**{title}**\nSelect an episode:",
         reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown",
+        parse_mode="Markdown"
     )
 
 
@@ -121,10 +119,10 @@ def episode_callback(update: Update, context: CallbackContext):
     try:
         servers = get_episode_videos(ep_slug)
     except Exception as e:
-        logger.exception("Episode videos error")
+        logger.error("Episode videos error: %s", e)
         return query.edit_message_text("⚠️ Could not fetch episode video links.")
 
-    # servers is now guaranteed to be a list of dicts
+    # Find the Dailymotion server
     selected = next(
         (s for s in servers
          if s["server_name"].lower().startswith("all sub player dailymotion")),
@@ -138,17 +136,33 @@ def episode_callback(update: Update, context: CallbackContext):
     video_url = selected["video_url"]
     subtitle_url = extract_italian_subtitle(video_url)
 
-    text = f"🎬 *Video (Dailymotion)*\n{video_url}"
-    if subtitle_url:
-        text += f"\n\n💬 *Italian subtitles*\n{subtitle_url}"
-    else:
-        text += "\n\n⚠️ Italian subtitles not found."
+    # First, send the video link
+    query.message.reply_text(
+        f"🎬 *Video (Dailymotion)*\n{video_url}",
+        parse_mode="Markdown"
+    )
 
-    query.edit_message_text(text, parse_mode="Markdown")
+    # Then download & send the subtitle as a .srt document
+    if subtitle_url:
+        try:
+            resp = requests.get(subtitle_url)
+            resp.raise_for_status()
+            buffer = io.BytesIO(resp.content)
+            buffer.name = "italian_subtitles.srt"
+            query.message.reply_document(
+                document=buffer,
+                filename="italian_subtitles.srt",
+                caption="💬 Here are the Italian subtitles"
+            )
+        except Exception as e:
+            logger.error("Subtitle download error: %s", e)
+            query.message.reply_text("⚠️ Failed to download subtitles.")
+    else:
+        query.message.reply_text("⚠️ Italian subtitles not found.")
 
 
 def error_handler(update: object, context: CallbackContext):
-    logger.error("Update caused error", exc_info=context.error)
+    logger.error("Update caused error: %s", context.error)
     if update and getattr(update, "message", None):
         update.message.reply_text("😵 Oops, something went wrong.")
     raise DispatcherHandlerStop()
