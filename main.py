@@ -17,7 +17,7 @@ from utils import (
     extract_italian_subtitle,
 )
 
-# Enable logging
+# ——— Logging —————————————————————————————————————————————————————
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -25,9 +25,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ——— Helpers ————————————————————————————————————————————————————
+def find_episodes(obj) -> list:
+    """
+    Recursively search for the first list under the key 'episodes'
+    anywhere in a nested dict/list structure.
+    """
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k.lower() == "episodes" and isinstance(v, list):
+                return v
+            elif isinstance(v, (dict, list)):
+                res = find_episodes(v)
+                if res:
+                    return res
+    elif isinstance(obj, list):
+        for item in obj:
+            res = find_episodes(item)
+            if res:
+                return res
+    return []
+
+
+# ——— Command Handlers ——————————————————————————————————————————
 def start(update: Update, context: CallbackContext):
     update.message.reply_text(
-        "👋 Welcome to the Animexin bot!\n\n"
+        "👋 Welcome to the Animexin bot!\n"
         "Use /search <title> to look up a Donghua/Anime."
     )
 
@@ -38,41 +61,41 @@ def search(update: Update, context: CallbackContext):
 
     query = " ".join(context.args)
     try:
-        series_list = search_series(query)
+        results = search_series(query)
     except Exception as e:
         logger.error("Search error: %s", e)
-        return update.message.reply_text("⚠️ Error contacting animexin_api.")
+        return update.message.reply_text("⚠️ Could not reach animexin_api.")
 
-    if not series_list:
+    if not results:
         return update.message.reply_text(f"🚫 No series found for “{query}”.")
 
-    # Build a map: index -> slug
+    # Build map of index → slug
     series_map = {}
-    keyboard = []
-    for idx, item in enumerate(series_list):
-        slug = item.get("slug")
-        title = item.get("title") or slug or f"Series {idx+1}"
+    buttons = []
+    for i, s in enumerate(results):
+        slug = s.get("slug")
+        title = s.get("title") or f"Series {i+1}"
         if not slug:
             continue
-        key = str(idx)
+        key = str(i)
         series_map[key] = slug
-        keyboard.append([InlineKeyboardButton(title, callback_data=f"series#{key}")])
+        buttons.append([InlineKeyboardButton(title, callback_data=f"series#{key}")])
 
     context.user_data["series_map"] = series_map
     update.message.reply_text(
         "Select a series:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
 def series_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
+
     key = query.data.split("#", 1)[1]
-    series_map = context.user_data.get("series_map", {})
-    slug = series_map.get(key)
+    slug = context.user_data.get("series_map", {}).get(key)
     if not slug:
-        return query.edit_message_text("❌ Invalid selection.")
+        return query.edit_message_text("❌ Invalid series selection.")
 
     try:
         info = get_series_info(slug)
@@ -80,20 +103,12 @@ def series_callback(update: Update, context: CallbackContext):
         logger.error("Series info error: %s", e)
         return query.edit_message_text("⚠️ Could not fetch series info.")
 
-    # Normalize the payload: some responses wrap everything under "data"
-    payload = info.get("data") if isinstance(info.get("data"), dict) else info
-
-    title = payload.get("title", slug)
-    episodes = payload.get("episodes")
-    # Sometimes the API might nest episodes under another key
-    if episodes is None:
-        # e.g. data.get("data") or data.get("eps")
-        episodes = payload.get("data") if isinstance(payload.get("data"), list) else []
-    if not isinstance(episodes, list):
-        episodes = []
+    # Recursively find 'episodes'
+    episodes = find_episodes(info)
+    title = info.get("title") or slug
 
     if not episodes:
-        logger.info("No episodes key found in payload; keys were: %s", payload.keys())
+        logger.info("Payload keys: %s", list(info.keys()))
         return query.edit_message_text(
             f"No episodes found for **{title}**.",
             parse_mode="Markdown"
@@ -101,21 +116,21 @@ def series_callback(update: Update, context: CallbackContext):
 
     # Build episode map
     ep_map = {}
-    keyboard = []
-    for idx, ep in enumerate(episodes):
-        ep_slug = ep.get("slug")
-        number = ep.get("number") or idx + 1
-        btn_text = ep.get("title") or f"Episode {number}"
-        if not ep_slug:
+    buttons = []
+    for i, ep in enumerate(episodes):
+        epi_slug = ep.get("slug")
+        num = ep.get("number") or i + 1
+        label = ep.get("title") or f"Episode {num}"
+        if not epi_slug:
             continue
-        key = str(idx)
-        ep_map[key] = ep_slug
-        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"episode#{key}")])
+        key = str(i)
+        ep_map[key] = epi_slug
+        buttons.append([InlineKeyboardButton(label, callback_data=f"episode#{key}")])
 
     context.user_data["ep_map"] = ep_map
     query.edit_message_text(
         f"**{title}**\nSelect an episode:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown"
     )
 
@@ -123,9 +138,9 @@ def series_callback(update: Update, context: CallbackContext):
 def episode_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
+
     key = query.data.split("#", 1)[1]
-    ep_map = context.user_data.get("ep_map", {})
-    ep_slug = ep_map.get(key)
+    ep_slug = context.user_data.get("ep_map", {}).get(key)
     if not ep_slug:
         return query.edit_message_text("❌ Invalid episode selection.")
 
@@ -133,12 +148,12 @@ def episode_callback(update: Update, context: CallbackContext):
         servers = get_episode_videos(ep_slug)
     except Exception as e:
         logger.error("Episode videos error: %s", e)
-        return query.edit_message_text("⚠️ Could not fetch episode video links.")
+        return query.edit_message_text("⚠️ Could not fetch video links.")
 
-    # Pick only the All Sub Player Dailymotion server
+    # Filter for our target server
     selected = next(
-        (s for s in servers if
-            s["server_name"].lower().startswith("all sub player dailymotion")),
+        (s for s in servers
+         if s["server_name"].lower().startswith("all sub player dailymotion")),
         None
     )
     if not selected:
@@ -147,24 +162,25 @@ def episode_callback(update: Update, context: CallbackContext):
         )
 
     video_url = selected["video_url"]
-    subtitle_url = extract_italian_subtitle(video_url)
+    sub_url = extract_italian_subtitle(video_url)
 
-    text = f"🎬 *Video (Dailymotion)*\n{video_url}"
-    if subtitle_url:
-        text += f"\n\n💬 *Italian subtitles*\n{subtitle_url}"
+    msg = f"🎬 *Video (Dailymotion)*\n{video_url}"
+    if sub_url:
+        msg += f"\n\n💬 *Italian subtitles*\n{sub_url}"
     else:
-        text += "\n\n⚠️ Italian subtitles not found."
+        msg += "\n\n⚠️ Italian subtitles not found."
 
-    query.edit_message_text(text, parse_mode="Markdown")
+    query.edit_message_text(msg, parse_mode="Markdown")
 
 
 def error_handler(update: object, context: CallbackContext):
     logger.error("Update caused error: %s", context.error)
     if update and getattr(update, "message", None):
-        update.message.reply_text("😵 Oops, something went wrong.")
+        update.message.reply_text("😵 Something went wrong.")
     raise DispatcherHandlerStop()
 
 
+# ——— Bot Startup —————————————————————————————————————————————
 def main():
     updater = Updater(config.TELEGRAM_TOKEN, use_context=True)
     dp = updater.dispatcher
