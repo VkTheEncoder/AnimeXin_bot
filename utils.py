@@ -24,37 +24,12 @@ def get_series_info(slug: str) -> dict:
     return resp.json()
 
 def get_episode_videos(ep_slug: str) -> list[dict]:
-    """Fetches `/episode/videos` and normalizes into a list of dicts."""
+    """Fetches `/episode/videos` and returns the video_servers list."""
     resp = requests.get(f"{API_URL}/episode/videos", params={"ep_slug": ep_slug})
     resp.raise_for_status()
     data = resp.json()
-
-    # If it's a dict of simple string→string, treat keys as server names
-    if isinstance(data, dict) and all(isinstance(v, str) for v in data.values()):
-        return [{"server_name": k, "video_url": v} for k, v in data.items()]
-
-    # If it’s wrapped in another key
-    if isinstance(data, dict):
-        for possible in ("servers", "data", "videos"):
-            if isinstance(data.get(possible), list):
-                data = data[possible]
-                break
-
-    # Now if it's a list of dict, verify shape
-    if isinstance(data, list):
-        normalized = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            # Try common field names
-            url = item.get("video_url") or item.get("url") or item.get("embed")
-            name = item.get("server_name") or item.get("server") or item.get("name")
-            if url:
-                normalized.append({"server_name": name or "server", "video_url": url})
-        return normalized
-
-    # Fallback
-    return []
+    # directly return the array your API provides
+    return data.get("video_servers", [])
 
 def extract_italian_subtitle(embed_url: str) -> str | None:
     """
