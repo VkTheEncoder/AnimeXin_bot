@@ -10,14 +10,9 @@ from telegram.ext import (
     DispatcherHandlerStop,
 )
 import config
-from utils import (
-    search_series,
-    get_series_info,
-    get_episode_videos,
-    extract_italian_subtitle,
-)
+from utils import search_series, get_series_info, get_episode_videos, extract_italian_subtitle
 
-# ——— Logging —————————————————————————————————————————————————————
+# — Logging setup —
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -25,32 +20,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ——— Helpers ————————————————————————————————————————————————————
-def find_episodes(obj) -> list:
-    """
-    Recursively search for the first list under the key 'episodes'
-    anywhere in a nested dict/list structure.
-    """
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k.lower() == "episodes" and isinstance(v, list):
-                return v
-            elif isinstance(v, (dict, list)):
-                res = find_episodes(v)
-                if res:
-                    return res
-    elif isinstance(obj, list):
-        for item in obj:
-            res = find_episodes(item)
-            if res:
-                return res
-    return []
-
-
-# ——— Command Handlers ——————————————————————————————————————————
 def start(update: Update, context: CallbackContext):
     update.message.reply_text(
-        "👋 Welcome to the Animexin bot!\n"
+        "👋 Welcome to the Animexin bot!\n\n"
         "Use /search <title> to look up a Donghua/Anime."
     )
 
@@ -61,18 +33,18 @@ def search(update: Update, context: CallbackContext):
 
     query = " ".join(context.args)
     try:
-        results = search_series(query)
+        series_list = search_series(query)
     except Exception as e:
         logger.error("Search error: %s", e)
-        return update.message.reply_text("⚠️ Could not reach animexin_api.")
+        return update.message.reply_text("⚠️ Error contacting animexin_api.")
 
-    if not results:
+    if not series_list:
         return update.message.reply_text(f"🚫 No series found for “{query}”.")
 
-    # Build map of index → slug
+    # Build a map: index → slug
     series_map = {}
     buttons = []
-    for i, s in enumerate(results):
+    for i, s in enumerate(series_list):
         slug = s.get("slug")
         title = s.get("title") or f"Series {i+1}"
         if not slug:
@@ -103,28 +75,29 @@ def series_callback(update: Update, context: CallbackContext):
         logger.error("Series info error: %s", e)
         return query.edit_message_text("⚠️ Could not fetch series info.")
 
-    # Recursively find 'episodes'
-    episodes = find_episodes(info)
+    episodes = info.get("episodes", [])
     title = info.get("title") or slug
 
     if not episodes:
-        logger.info("Payload keys: %s", list(info.keys()))
         return query.edit_message_text(
             f"No episodes found for **{title}**.",
             parse_mode="Markdown"
         )
 
-    # Build episode map
+    # Build episode map using the correct keys
     ep_map = {}
     buttons = []
     for i, ep in enumerate(episodes):
-        epi_slug = ep.get("slug")
-        num = ep.get("number") or i + 1
-        label = ep.get("title") or f"Episode {num}"
-        if not epi_slug:
+        # ← THESE TWO LINES FIXED ↑↑
+        ep_slug = ep.get("ep_slug")                   # was ep.get("slug")
+        number = ep.get("episode_number") or (i + 1)  # was ep.get("number")
+        label = ep.get("title") or f"Episode {number}"
+
+        if not ep_slug:
             continue
+
         key = str(i)
-        ep_map[key] = epi_slug
+        ep_map[key] = ep_slug
         buttons.append([InlineKeyboardButton(label, callback_data=f"episode#{key}")])
 
     context.user_data["ep_map"] = ep_map
@@ -148,9 +121,9 @@ def episode_callback(update: Update, context: CallbackContext):
         servers = get_episode_videos(ep_slug)
     except Exception as e:
         logger.error("Episode videos error: %s", e)
-        return query.edit_message_text("⚠️ Could not fetch video links.")
+        return query.edit_message_text("⚠️ Could not fetch episode video links.")
 
-    # Filter for our target server
+    # Pick only the All Sub Player Dailymotion server
     selected = next(
         (s for s in servers
          if s["server_name"].lower().startswith("all sub player dailymotion")),
@@ -162,25 +135,24 @@ def episode_callback(update: Update, context: CallbackContext):
         )
 
     video_url = selected["video_url"]
-    sub_url = extract_italian_subtitle(video_url)
+    subtitle_url = extract_italian_subtitle(video_url)
 
-    msg = f"🎬 *Video (Dailymotion)*\n{video_url}"
-    if sub_url:
-        msg += f"\n\n💬 *Italian subtitles*\n{sub_url}"
+    text = f"🎬 *Video (Dailymotion)*\n{video_url}"
+    if subtitle_url:
+        text += f"\n\n💬 *Italian subtitles*\n{subtitle_url}"
     else:
-        msg += "\n\n⚠️ Italian subtitles not found."
+        text += "\n\n⚠️ Italian subtitles not found."
 
-    query.edit_message_text(msg, parse_mode="Markdown")
+    query.edit_message_text(text, parse_mode="Markdown")
 
 
 def error_handler(update: object, context: CallbackContext):
     logger.error("Update caused error: %s", context.error)
     if update and getattr(update, "message", None):
-        update.message.reply_text("😵 Something went wrong.")
+        update.message.reply_text("😵 Oops, something went wrong.")
     raise DispatcherHandlerStop()
 
 
-# ——— Bot Startup —————————————————————————————————————————————
 def main():
     updater = Updater(config.TELEGRAM_TOKEN, use_context=True)
     dp = updater.dispatcher
