@@ -5,6 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Updater, CommandHandler, CallbackQueryHandler, CallbackContext
 )
+from telegram.ext import DispatcherHandlerStop
 import config
 from utils import (
     search_series,
@@ -15,7 +16,8 @@ from utils import (
 
 # Enable logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -31,17 +33,17 @@ def search(update: Update, context: CallbackContext):
 
     query = " ".join(context.args)
     try:
-        results = search_series(query)
+        series_list = search_series(query)
     except Exception as e:
         logger.error("Search error: %s", e)
         return update.message.reply_text("⚠️ Error contacting animexin_api.")
 
-    if not results:
-        return update.message.reply_text("🚫 No series found for “%s”." % query)
+    if not series_list:
+        return update.message.reply_text(f"🚫 No series found for “{query}”.")
 
     keyboard = [
-        [InlineKeyboardButton(s["title"], callback_data=f"series#{s['slug']}")]
-        for s in results
+        [InlineKeyboardButton(item["title"], callback_data=f"series#{item['slug']}")]
+        for item in series_list
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text("Select a series:", reply_markup=reply_markup)
@@ -67,7 +69,11 @@ def series_callback(update: Update, context: CallbackContext):
         for ep in episodes
     ]
     reply = InlineKeyboardMarkup(keyboard)
-    query.edit_message_text(f"**{title}**\nSelect an episode:", reply_markup=reply, parse_mode="Markdown")
+    query.edit_message_text(
+        f"**{title}**\nSelect an episode:",
+        reply_markup=reply,
+        parse_mode="Markdown"
+    )
 
 def episode_callback(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -99,6 +105,13 @@ def episode_callback(update: Update, context: CallbackContext):
 
     query.edit_message_text(text, parse_mode="Markdown")
 
+def error_handler(update: object, context: CallbackContext):
+    logger.error("Update caused error: %s", context.error)
+    if update and getattr(update, "message", None):
+        update.message.reply_text("😵 Oops, something went wrong.")
+    # Stop further propagation
+    raise DispatcherHandlerStop()
+
 def main():
     updater = Updater(config.TELEGRAM_TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -107,6 +120,7 @@ def main():
     dp.add_handler(CommandHandler("search", search))
     dp.add_handler(CallbackQueryHandler(series_callback, pattern=r"^series#"))
     dp.add_handler(CallbackQueryHandler(episode_callback, pattern=r"^episode#"))
+    dp.add_error_handler(error_handler)
 
     updater.start_polling()
     updater.idle()
