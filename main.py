@@ -1,3 +1,5 @@
+# main.py
+
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -15,17 +17,20 @@ from utils import (
     extract_italian_subtitle,
 )
 
-# Logging
+# Enable logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
 
 def start(update: Update, context: CallbackContext):
     update.message.reply_text(
         "👋 Welcome to the Animexin bot!\n\n"
         "Use /search <title> to look up a Donghua/Anime."
     )
+
 
 def search(update: Update, context: CallbackContext):
     if not context.args:
@@ -51,17 +56,14 @@ def search(update: Update, context: CallbackContext):
             continue
         key = str(idx)
         series_map[key] = slug
-        keyboard.append(
-            [InlineKeyboardButton(title, callback_data=f"series#{key}")]
-        )
+        keyboard.append([InlineKeyboardButton(title, callback_data=f"series#{key}")])
 
-    # Save it for lookup in series_callback
     context.user_data["series_map"] = series_map
-
     update.message.reply_text(
         "Select a series:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
 
 def series_callback(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -78,10 +80,24 @@ def series_callback(update: Update, context: CallbackContext):
         logger.error("Series info error: %s", e)
         return query.edit_message_text("⚠️ Could not fetch series info.")
 
-    title = info.get("title", slug)
-    episodes = info.get("episodes") or []
+    # Normalize the payload: some responses wrap everything under "data"
+    payload = info.get("data") if isinstance(info.get("data"), dict) else info
+
+    title = payload.get("title", slug)
+    episodes = payload.get("episodes")
+    # Sometimes the API might nest episodes under another key
+    if episodes is None:
+        # e.g. data.get("data") or data.get("eps")
+        episodes = payload.get("data") if isinstance(payload.get("data"), list) else []
+    if not isinstance(episodes, list):
+        episodes = []
+
     if not episodes:
-        return query.edit_message_text(f"No episodes found for **{title}**.", parse_mode="Markdown")
+        logger.info("No episodes key found in payload; keys were: %s", payload.keys())
+        return query.edit_message_text(
+            f"No episodes found for **{title}**.",
+            parse_mode="Markdown"
+        )
 
     # Build episode map
     ep_map = {}
@@ -94,18 +110,15 @@ def series_callback(update: Update, context: CallbackContext):
             continue
         key = str(idx)
         ep_map[key] = ep_slug
-        keyboard.append(
-            [InlineKeyboardButton(btn_text, callback_data=f"episode#{key}")]
-        )
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"episode#{key}")])
 
-    # Save for episode_callback
     context.user_data["ep_map"] = ep_map
-
     query.edit_message_text(
         f"**{title}**\nSelect an episode:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
+
 
 def episode_callback(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -122,14 +135,16 @@ def episode_callback(update: Update, context: CallbackContext):
         logger.error("Episode videos error: %s", e)
         return query.edit_message_text("⚠️ Could not fetch episode video links.")
 
-    # Filter for the desired server
+    # Pick only the All Sub Player Dailymotion server
     selected = next(
-        (s for s in servers
-         if s["server_name"].lower().startswith("all sub player dailymotion")),
+        (s for s in servers if
+            s["server_name"].lower().startswith("all sub player dailymotion")),
         None
     )
     if not selected:
-        return query.edit_message_text("🚫 ‘All Sub Player Dailymotion’ server not available.")
+        return query.edit_message_text(
+            "🚫 ‘All Sub Player Dailymotion’ server not available."
+        )
 
     video_url = selected["video_url"]
     subtitle_url = extract_italian_subtitle(video_url)
@@ -142,11 +157,13 @@ def episode_callback(update: Update, context: CallbackContext):
 
     query.edit_message_text(text, parse_mode="Markdown")
 
+
 def error_handler(update: object, context: CallbackContext):
     logger.error("Update caused error: %s", context.error)
     if update and getattr(update, "message", None):
         update.message.reply_text("😵 Oops, something went wrong.")
     raise DispatcherHandlerStop()
+
 
 def main():
     updater = Updater(config.TELEGRAM_TOKEN, use_context=True)
@@ -160,6 +177,7 @@ def main():
 
     updater.start_polling()
     updater.idle()
+
 
 if __name__ == "__main__":
     main()
