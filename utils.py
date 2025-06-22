@@ -11,7 +11,7 @@ def search_series(query: str) -> list[dict]:
     resp.raise_for_status()
     data = resp.json()
 
-    # Normalize: extract list from dict or return directly if already a list
+    # Normalize to a list of dicts
     if isinstance(data, dict):
         return data.get("data") or data.get("results") or []
     if isinstance(data, list):
@@ -19,7 +19,7 @@ def search_series(query: str) -> list[dict]:
     return []
 
 def get_series_info(slug: str) -> dict:
-    """Returns series metadata (including episodes)."""
+    """Returns raw JSON response for a specific series slug."""
     resp = requests.get(f"{API_URL}/donghua/info", params={"slug": slug})
     resp.raise_for_status()
     return resp.json()
