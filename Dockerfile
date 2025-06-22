@@ -1,23 +1,20 @@
-# Use an official lightweight Python image
+# Dockerfile
+
+# 1. Base image
 FROM python:3.9-slim
 
-# Set a working directory
+# 2. Set working directory
 WORKDIR /app
 
-# Copy and install dependencies
+# 3. Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bot code
+# 4. Copy your bot code (including config.py)
 COPY . .
 
-# (Optional) expose logs to Docker
+# 5. Ensure logs are unbuffered (optional but handy)
 ENV PYTHONUNBUFFERED=1
 
-# Configure via environment variables
-# You can override these at docker-run time instead of hardcoding in config.py
-ENV API_URL="http://host.docker.internal:8000"
-ENV TELEGRAM_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
-
-# Start the bot
+# 6. Run the bot
 CMD ["python", "main.py"]
