@@ -10,12 +10,16 @@ from telegram.ext import (
     DispatcherHandlerStop,
 )
 import config
-from utils import search_series, get_series_info, get_episode_videos, extract_italian_subtitle
+from utils import (
+    search_series,
+    get_series_info,
+    get_episode_videos,
+    extract_italian_subtitle,
+)
 
-# — Logging setup —
+# — Logging —
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -35,13 +39,13 @@ def search(update: Update, context: CallbackContext):
     try:
         series_list = search_series(query)
     except Exception as e:
-        logger.error("Search error: %s", e)
+        logger.exception("Search error")
         return update.message.reply_text("⚠️ Error contacting animexin_api.")
 
     if not series_list:
         return update.message.reply_text(f"🚫 No series found for “{query}”.")
 
-    # Build a map: index → slug
+    # map index → slug
     series_map = {}
     buttons = []
     for i, s in enumerate(series_list):
@@ -55,8 +59,7 @@ def search(update: Update, context: CallbackContext):
 
     context.user_data["series_map"] = series_map
     update.message.reply_text(
-        "Select a series:",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        "Select a series:", reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
@@ -72,30 +75,28 @@ def series_callback(update: Update, context: CallbackContext):
     try:
         info = get_series_info(slug)
     except Exception as e:
-        logger.error("Series info error: %s", e)
+        logger.exception("Series info error")
         return query.edit_message_text("⚠️ Could not fetch series info.")
 
-    episodes = info.get("episodes", [])
     title = info.get("title") or slug
+    episodes = info.get("episodes") or []
+    if not isinstance(episodes, list):
+        episodes = []
 
     if not episodes:
         return query.edit_message_text(
-            f"No episodes found for **{title}**.",
-            parse_mode="Markdown"
+            f"No episodes found for **{title}**.", parse_mode="Markdown"
         )
 
-    # Build episode map using the correct keys
+    # map index → ep_slug
     ep_map = {}
     buttons = []
     for i, ep in enumerate(episodes):
-        # ← THESE TWO LINES FIXED ↑↑
-        ep_slug = ep.get("ep_slug")                   # was ep.get("slug")
-        number = ep.get("episode_number") or (i + 1)  # was ep.get("number")
+        ep_slug = ep.get("ep_slug") or ep.get("slug")
+        number = ep.get("episode_number") or ep.get("number") or (i + 1)
         label = ep.get("title") or f"Episode {number}"
-
         if not ep_slug:
             continue
-
         key = str(i)
         ep_map[key] = ep_slug
         buttons.append([InlineKeyboardButton(label, callback_data=f"episode#{key}")])
@@ -104,7 +105,7 @@ def series_callback(update: Update, context: CallbackContext):
     query.edit_message_text(
         f"**{title}**\nSelect an episode:",
         reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 
@@ -120,10 +121,10 @@ def episode_callback(update: Update, context: CallbackContext):
     try:
         servers = get_episode_videos(ep_slug)
     except Exception as e:
-        logger.error("Episode videos error: %s", e)
+        logger.exception("Episode videos error")
         return query.edit_message_text("⚠️ Could not fetch episode video links.")
 
-    # Pick only the All Sub Player Dailymotion server
+    # servers is now guaranteed to be a list of dicts
     selected = next(
         (s for s in servers
          if s["server_name"].lower().startswith("all sub player dailymotion")),
@@ -147,7 +148,7 @@ def episode_callback(update: Update, context: CallbackContext):
 
 
 def error_handler(update: object, context: CallbackContext):
-    logger.error("Update caused error: %s", context.error)
+    logger.error("Update caused error", exc_info=context.error)
     if update and getattr(update, "message", None):
         update.message.reply_text("😵 Oops, something went wrong.")
     raise DispatcherHandlerStop()
