@@ -23,19 +23,23 @@ def get_episode_videos(ep_slug: str) -> list[dict]:
     resp = requests.get(f"{API_URL}/episode/videos", params={"ep_slug": ep_slug})
     resp.raise_for_status()
     data = resp.json()
+    # the API returns {"video_servers":[{server_name,video_url,embed_url},...]}
     return data.get("video_servers", [])
 
-def extract_italian_subtitle_url(embed_url: str) -> str | None:
+def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
     """
-    Given a Dailymotion embed URL, pull the video ID and call the Dailymotion API
-    to get the 'it' subtitle URL (usually a .vtt file).
+    Scrape the Animexin wrapper page (not the raw Dailymotion iframe)
+    to find the <track srclang="it"> URL (usually .vtt or .srt).
     """
-    m = re.search(r"/video/([^/?&]+)", embed_url)
-    if not m:
-        return None
-    vid = m.group(1)
-    api = f"https://api.dailymotion.com/video/{vid}?fields=subtitles"
-    resp = requests.get(api)
+    resp = requests.get(wrapper_url)
     resp.raise_for_status()
-    subs = resp.json().get("subtitles", {})
-    return subs.get("it")  # this is a .vtt URL (if present)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    track = soup.find("track", {"srclang": "it"})
+    if not track or not track.get("src"):
+        return None
+    src = track["src"]
+    if src.startswith("//"):
+        return "https:" + src
+    if src.startswith("/"):
+        return urljoin(wrapper_url, src)
+    return src
