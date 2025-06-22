@@ -23,6 +23,7 @@ from utils import (
     extract_italian_subtitle_url,
 )
 
+# — Logging —
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -137,7 +138,6 @@ def episode_callback(update: Update, context: CallbackContext):
         data = resp.content
         ext  = os.path.splitext(urlparse(sub_url).path)[1].lower()
 
-        # convert VTT → SRT in-memory
         if ext in (".vtt", ".webvtt"):
             lines, blocks, idx, i = resp.text.splitlines(), [], 1, 0
             while i < len(lines):
@@ -155,7 +155,6 @@ def episode_callback(update: Update, context: CallbackContext):
                 i += 1
             data = "\n\n".join(blocks).encode("utf-8")
 
-        # send .srt
         buf = io.BytesIO(data)
         buf.name = "italian_subtitles.srt"
         q.message.reply_document(
