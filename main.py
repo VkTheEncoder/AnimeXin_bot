@@ -1,11 +1,12 @@
-# main.py
-
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Updater, CommandHandler, CallbackQueryHandler, CallbackContext
+    Updater,
+    CommandHandler,
+    CallbackQueryHandler,
+    CallbackContext,
+    DispatcherHandlerStop,
 )
-from telegram.ext import DispatcherHandlerStop
 import config
 from utils import (
     search_series,
@@ -14,10 +15,9 @@ from utils import (
     extract_italian_subtitle,
 )
 
-# Enable logging
+# Logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -41,18 +41,36 @@ def search(update: Update, context: CallbackContext):
     if not series_list:
         return update.message.reply_text(f"🚫 No series found for “{query}”.")
 
-    keyboard = [
-        [InlineKeyboardButton(item.get("title", "Unknown"), callback_data=f"series#{item.get('slug', '')}")]
-        for item in series_list
-        if item.get("slug")
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("Select a series:", reply_markup=reply_markup)
+    # Build a map: index -> slug
+    series_map = {}
+    keyboard = []
+    for idx, item in enumerate(series_list):
+        slug = item.get("slug")
+        title = item.get("title") or slug or f"Series {idx+1}"
+        if not slug:
+            continue
+        key = str(idx)
+        series_map[key] = slug
+        keyboard.append(
+            [InlineKeyboardButton(title, callback_data=f"series#{key}")]
+        )
+
+    # Save it for lookup in series_callback
+    context.user_data["series_map"] = series_map
+
+    update.message.reply_text(
+        "Select a series:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 def series_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
-    slug = query.data.split("#", 1)[1]
+    key = query.data.split("#", 1)[1]
+    series_map = context.user_data.get("series_map", {})
+    slug = series_map.get(key)
+    if not slug:
+        return query.edit_message_text("❌ Invalid selection.")
 
     try:
         info = get_series_info(slug)
@@ -61,33 +79,42 @@ def series_callback(update: Update, context: CallbackContext):
         return query.edit_message_text("⚠️ Could not fetch series info.")
 
     title = info.get("title", slug)
-    episodes = info.get("episodes") or info.get("data") or []
+    episodes = info.get("episodes") or []
     if not episodes:
         return query.edit_message_text(f"No episodes found for **{title}**.", parse_mode="Markdown")
 
+    # Build episode map
+    ep_map = {}
     keyboard = []
-    for idx, ep in enumerate(episodes, start=1):
-        # fallbacks for display text and slug
-        number = ep.get("number") or ep.get("episode") or idx
+    for idx, ep in enumerate(episodes):
+        ep_slug = ep.get("slug")
+        number = ep.get("number") or idx + 1
         btn_text = ep.get("title") or f"Episode {number}"
-        ep_slug = ep.get("slug") or ep.get("ep_slug") or ep.get("url")
         if not ep_slug:
             continue
-        keyboard.append([
-            InlineKeyboardButton(btn_text, callback_data=f"episode#{ep_slug}")
-        ])
+        key = str(idx)
+        ep_map[key] = ep_slug
+        keyboard.append(
+            [InlineKeyboardButton(btn_text, callback_data=f"episode#{key}")]
+        )
 
-    reply = InlineKeyboardMarkup(keyboard)
+    # Save for episode_callback
+    context.user_data["ep_map"] = ep_map
+
     query.edit_message_text(
         f"**{title}**\nSelect an episode:",
-        reply_markup=reply,
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
 
 def episode_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
-    ep_slug = query.data.split("#", 1)[1]
+    key = query.data.split("#", 1)[1]
+    ep_map = context.user_data.get("ep_map", {})
+    ep_slug = ep_map.get(key)
+    if not ep_slug:
+        return query.edit_message_text("❌ Invalid episode selection.")
 
     try:
         servers = get_episode_videos(ep_slug)
@@ -95,9 +122,10 @@ def episode_callback(update: Update, context: CallbackContext):
         logger.error("Episode videos error: %s", e)
         return query.edit_message_text("⚠️ Could not fetch episode video links.")
 
-    # Pick only the All Sub Player Dailymotion server
+    # Filter for the desired server
     selected = next(
-        (s for s in servers if s["server_name"].lower().startswith("all sub player dailymotion")),
+        (s for s in servers
+         if s["server_name"].lower().startswith("all sub player dailymotion")),
         None
     )
     if not selected:
