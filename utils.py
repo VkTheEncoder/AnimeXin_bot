@@ -27,45 +27,51 @@ def get_episode_videos(ep_slug: str) -> list[dict]:
 
 def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
     """
-    1) Scrape the Animexin wrapper for <track srclang="it">.
-    2) If none, request the Dailymotion embed with '?captions=it' to expose tracks.
-    3) Finally, fall back to the Dailymotion subtitles API.
+    1) Scrape the Animexin wrapper page for any <track> whose
+       srclang or label contains 'ita' (covers 'it', 'italiano').
+    2) If none, hit the Dailymotion embed with '?captions=it'.
+    3) If still none, call the Dailymotion subtitles API and
+       pick the URL ending in '_subtitle_it.srt'.
     """
-    # —– 1) Animexin wrapper page —–
+    # —– 1) Try wrapper page —
     try:
         r = requests.get(wrapper_url)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
-        track = soup.find("track", {"srclang": "it"})
-        if track and track.get("src"):
-            src = track["src"]
-            if src.startswith("//"):
-                return "https:" + src
-            if src.startswith("/"):
-                return urljoin(wrapper_url, src)
-            return src
+        for track in soup.find_all("track"):
+            sr = (track.get("srclang") or "").lower()
+            lb = (track.get("label") or "").lower()
+            if "ita" in sr or "ita" in lb:
+                src = track.get("src")
+                if not src:
+                    continue
+                if src.startswith("//"):
+                    return "https:" + src
+                if src.startswith("/"):
+                    return urljoin(wrapper_url, src)
+                return src
     except Exception:
         pass
 
-    # —– 2) Dailymotion embed with captions=it —–
-    # ensure we have the embed URL
-    if "/embed/video/" in wrapper_url:
-        embed_url = wrapper_url
-    else:
-        # convert a normal Dailymotion URL to its embed form
-        embed_url = wrapper_url.replace("/video/", "/embed/video/")
-    embed_with_cc = embed_url + ("&" if "?" in embed_url else "?") + "captions=it"
+    # —– 2) Force captions=it on the Dailymotion embed —
     try:
-        r2 = requests.get(embed_with_cc)
+        if "/embed/video/" in wrapper_url:
+            embed = wrapper_url
+        else:
+            embed = wrapper_url.replace("/video/", "/embed/video/")
+        url_cc = embed + ("&" if "?" in embed else "?") + "captions=it"
+        r2 = requests.get(url_cc)
         r2.raise_for_status()
         soup2 = BeautifulSoup(r2.text, "html.parser")
-        track2 = soup2.find("track", {"srclang": "it"})
-        if track2 and track2.get("src"):
-            return track2["src"]
+        for track in soup2.find_all("track"):
+            sr = (track.get("srclang") or "").lower()
+            lb = (track.get("label") or "").lower()
+            if "ita" in sr or "ita" in lb:
+                return track["src"]
     except Exception:
         pass
 
-    # —– 3) Dailymotion subtitles API fallback —–
+    # —– 3) Fallback to Dailymotion API for .srt —
     m = re.search(r"/video/([^/?&]+)", wrapper_url)
     if not m:
         return None
@@ -76,8 +82,10 @@ def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
         r3.raise_for_status()
         subs = r3.json().get("list") or r3.json().get("subtitles") or []
         for t in subs:
-            if t.get("language") == "it" and t.get("url"):
-                return t["url"]
+            url = t.get("url") or ""
+            # pick the static .srt if available
+            if t.get("language") in ("it",) or "_subtitle_it.srt" in url:
+                return url
     except Exception:
         pass
 
