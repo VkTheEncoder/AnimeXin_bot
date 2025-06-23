@@ -1,11 +1,12 @@
+# main.py
 import logging
 import io
+from urllib.parse import urlparse
+import requests
 import os
 import tempfile
 import subprocess
-import requests
 
-from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Updater,
@@ -21,14 +22,13 @@ from utils import (
     get_series_info,
     get_episode_videos,
     extract_italian_subtitle_url,
+    download_subtitles_with_ytdlp,
 )
 
-# — Logging —
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
 
 def start(update: Update, context: CallbackContext):
     update.message.reply_text("👋 Welcome! Use /search <title> to begin.")
@@ -121,51 +121,24 @@ def episode_callback(update: Update, context: CallbackContext):
     if not sel:
         return q.edit_message_text("🚫 Dailymotion server not available.")
 
-    video_url = sel["video_url"]
+    video_url = sel.get("video_url")
     wrapper   = sel.get("embed_url") or sel.get("iframe_src") or video_url
 
     # 1) Playback link
     q.message.reply_text(f"🎬 Video (Dailymotion)\n{video_url}")
 
-    # 2) Subtitle fetch & convert
-    sub_url = extract_italian_subtitle_url(wrapper)
-    if not sub_url:
-        return q.message.reply_text("⚠️ Italian subtitles not found.")
+    # 2) Fetch subtitles via yt-dlp
+    data = download_subtitles_with_ytdlp(video_url, lang="it")
+    if not data:
+        return q.message.reply_text("⚠️ Italian subtitles not found via yt-dlp.")
 
-    try:
-        resp = requests.get(sub_url)
-        resp.raise_for_status()
-        data = resp.content
-        ext  = os.path.splitext(urlparse(sub_url).path)[1].lower()
-
-        if ext in (".vtt", ".webvtt"):
-            lines, blocks, idx, i = resp.text.splitlines(), [], 1, 0
-            while i < len(lines):
-                ln = lines[i].strip()
-                if "-->" in ln:
-                    s, e = ln.split(" --> ")
-                    s, e = s.replace(".", ","), e.replace(".", ",")
-                    i += 1
-                    txt = []
-                    while i < len(lines) and lines[i].strip():
-                        txt.append(lines[i])
-                        i += 1
-                    blocks.append(f"{idx}\n{s} --> {e}\n" + "\n".join(txt))
-                    idx += 1
-                i += 1
-            data = "\n\n".join(blocks).encode("utf-8")
-
-        buf = io.BytesIO(data)
-        buf.name = "italian_subtitles.srt"
-        q.message.reply_document(
-            document=buf,
-            filename="italian_subtitles.srt",
-            caption="💬 Italian subtitles"
-        )
-
-    except Exception as e:
-        logger.error("Subtitle processing error: %s", e)
-        q.message.reply_text("⚠️ Could not download/process subtitles.")
+    buf = io.BytesIO(data)
+    buf.name = "italian_subtitles.srt"
+    q.message.reply_document(
+        document=buf,
+        filename="italian_subtitles.srt",
+        caption="💬 Italian subtitles"
+    )
 
 
 def error_handler(update: object, context: CallbackContext):
