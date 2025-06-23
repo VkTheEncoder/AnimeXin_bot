@@ -1,8 +1,12 @@
+# utils.py
 import re
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from config import API_URL
+import yt_dlp
+import tempfile
+import os
 
 def search_series(query: str) -> list[dict]:
     resp = requests.get(f"{API_URL}/search", params={"query": query})
@@ -27,13 +31,11 @@ def get_episode_videos(ep_slug: str) -> list[dict]:
 
 def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
     """
-    1) Scrape the Animexin wrapper page for any <track> whose
-       srclang or label contains 'ita' (covers 'it', 'italiano').
-    2) If none, hit the Dailymotion embed with '?captions=it'.
-    3) If still none, call the Dailymotion subtitles API and
-       pick the URL ending in '_subtitle_it.srt'.
+    1) Scrape the Animexin wrapper for <track> tags containing 'ita'.
+    2) Try Dailymotion embed with captions=it.
+    3) Fallback to Dailymotion API subtitles.
     """
-    # —– 1) Try wrapper page —
+    # 1) Wrapper page
     try:
         r = requests.get(wrapper_url)
         r.raise_for_status()
@@ -53,7 +55,7 @@ def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
     except Exception:
         pass
 
-    # —– 2) Force captions=it on the Dailymotion embed —
+    # 2) Embed with captions=it
     try:
         if "/embed/video/" in wrapper_url:
             embed = wrapper_url
@@ -67,11 +69,11 @@ def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
             sr = (track.get("srclang") or "").lower()
             lb = (track.get("label") or "").lower()
             if "ita" in sr or "ita" in lb:
-                return track["src"]
+                return track.get("src")
     except Exception:
         pass
 
-    # —– 3) Fallback to Dailymotion API for .srt —
+    # 3) Dailymotion API
     m = re.search(r"/video/([^/?&]+)", wrapper_url)
     if not m:
         return None
@@ -83,10 +85,40 @@ def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
         subs = r3.json().get("list") or r3.json().get("subtitles") or []
         for t in subs:
             url = t.get("url") or ""
-            # pick the static .srt if available
-            if t.get("language") in ("it",) or "_subtitle_it.srt" in url:
+            if t.get("language") in ("it",) or url.endswith("_subtitle_it.srt"):
                 return url
     except Exception:
         pass
 
     return None
+
+
+def download_subtitles_with_ytdlp(video_url: str, lang: str = "it") -> bytes | None:
+    """
+    Use yt-dlp to download only the `.srt` subtitles for the given video_url and language.
+    """
+    ydl_opts = {
+        "skip_download": True,
+        "writesubtitles": True,
+        "subtitlesformat": "srt",
+        "subtitleslangs": [lang],
+        "outtmpl": os.path.join(tempfile.gettempdir(), "%(id)s.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(video_url, download=False)
+        subs = info.get("requested_subtitles") or info.get("subtitles") or {}
+        if lang not in subs:
+            return None
+        ydl.download([video_url])
+        vid = info.get("id")
+        srt_path = os.path.join(tempfile.gettempdir(), f"{vid}.{lang}.srt")
+        if not os.path.exists(srt_path):
+            srt_path = os.path.join(tempfile.gettempdir(), f"{vid}.srt")
+        if not os.path.exists(srt_path):
+            return None
+        with open(srt_path, "rb") as f:
+            data = f.read()
+        os.unlink(srt_path)
+        return data
