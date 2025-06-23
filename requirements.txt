@@ -4,3 +4,4 @@ beautifulsoup4
 ffmpeg
 yt-dlp
 lxml
+googletrans==4.0.0-rc1
