@@ -31,11 +31,9 @@ def get_episode_videos(ep_slug: str) -> list[dict]:
 
 def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
     """
-    1) Scrape the Animexin wrapper for <track> tags containing 'ita'.
-    2) Try Dailymotion embed with captions=it.
-    3) Fallback to Dailymotion API subtitles.
+    (Legacy) Scrape wrapper or Dailymotion API for subtitle URL.
     """
-    # 1) Wrapper page
+    # same as before
     try:
         r = requests.get(wrapper_url)
         r.raise_for_status()
@@ -45,38 +43,14 @@ def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
             lb = (track.get("label") or "").lower()
             if "ita" in sr or "ita" in lb:
                 src = track.get("src")
-                if not src:
-                    continue
-                if src.startswith("//"):
-                    return "https:" + src
-                if src.startswith("/"):
-                    return urljoin(wrapper_url, src)
-                return src
-    except Exception:
+                if src:
+                    if src.startswith("//"): return "https:" + src
+                    if src.startswith("/"): return urljoin(wrapper_url, src)
+                    return src
+    except:
         pass
-
-    # 2) Embed with captions=it
-    try:
-        if "/embed/video/" in wrapper_url:
-            embed = wrapper_url
-        else:
-            embed = wrapper_url.replace("/video/", "/embed/video/")
-        url_cc = embed + ("&" if "?" in embed else "?") + "captions=it"
-        r2 = requests.get(url_cc)
-        r2.raise_for_status()
-        soup2 = BeautifulSoup(r2.text, "html.parser")
-        for track in soup2.find_all("track"):
-            sr = (track.get("srclang") or "").lower()
-            lb = (track.get("label") or "").lower()
-            if "ita" in sr or "ita" in lb:
-                return track.get("src")
-    except Exception:
-        pass
-
-    # 3) Dailymotion API
     m = re.search(r"/video/([^/?&]+)", wrapper_url)
-    if not m:
-        return None
+    if not m: return None
     vid = m.group(1)
     try:
         api_url = f"https://api.dailymotion.com/video/{vid}/subtitles"
@@ -85,17 +59,15 @@ def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
         subs = r3.json().get("list") or r3.json().get("subtitles") or []
         for t in subs:
             url = t.get("url") or ""
-            if t.get("language") in ("it",) or url.endswith("_subtitle_it.srt"):
+            if t.get("language") == "it" or url.endswith("_subtitle_it.srt"):
                 return url
-    except Exception:
+    except:
         pass
-
     return None
-
 
 def download_subtitles_with_ytdlp(video_url: str, lang: str = "it") -> bytes | None:
     """
-    Use yt-dlp to download only the `.srt` subtitles for the given video_url and language.
+    Use yt-dlp to fetch .srt subtitles for the given video_url.
     """
     ydl_opts = {
         "skip_download": True,
