@@ -1,4 +1,3 @@
-# utils.py
 import re
 import requests
 from bs4 import BeautifulSoup
@@ -7,6 +6,7 @@ from config import API_URL
 import yt_dlp
 import tempfile
 import os
+from googletrans import Translator
 
 def search_series(query: str) -> list[dict]:
     resp = requests.get(f"{API_URL}/search", params={"query": query})
@@ -29,45 +29,10 @@ def get_episode_videos(ep_slug: str) -> list[dict]:
     data = resp.json()
     return data.get("video_servers", [])
 
-def extract_italian_subtitle_url(wrapper_url: str) -> str | None:
-    """
-    (Legacy) Scrape wrapper or Dailymotion API for subtitle URL.
-    """
-    # same as before
-    try:
-        r = requests.get(wrapper_url)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        for track in soup.find_all("track"):
-            sr = (track.get("srclang") or "").lower()
-            lb = (track.get("label") or "").lower()
-            if "ita" in sr or "ita" in lb:
-                src = track.get("src")
-                if src:
-                    if src.startswith("//"): return "https:" + src
-                    if src.startswith("/"): return urljoin(wrapper_url, src)
-                    return src
-    except:
-        pass
-    m = re.search(r"/video/([^/?&]+)", wrapper_url)
-    if not m: return None
-    vid = m.group(1)
-    try:
-        api_url = f"https://api.dailymotion.com/video/{vid}/subtitles"
-        r3 = requests.get(api_url)
-        r3.raise_for_status()
-        subs = r3.json().get("list") or r3.json().get("subtitles") or []
-        for t in subs:
-            url = t.get("url") or ""
-            if t.get("language") == "it" or url.endswith("_subtitle_it.srt"):
-                return url
-    except:
-        pass
-    return None
-
 def download_subtitles_with_ytdlp(video_url: str, lang: str = "it") -> bytes | None:
     """
     Use yt-dlp to fetch .srt subtitles for the given video_url.
+    Returns raw .srt data as bytes, or None if not available.
     """
     ydl_opts = {
         "skip_download": True,
@@ -83,6 +48,7 @@ def download_subtitles_with_ytdlp(video_url: str, lang: str = "it") -> bytes | N
         subs = info.get("requested_subtitles") or info.get("subtitles") or {}
         if lang not in subs:
             return None
+        # Download the subtitle file
         ydl.download([video_url])
         vid = info.get("id")
         srt_path = os.path.join(tempfile.gettempdir(), f"{vid}.{lang}.srt")
@@ -94,3 +60,25 @@ def download_subtitles_with_ytdlp(video_url: str, lang: str = "it") -> bytes | N
             data = f.read()
         os.unlink(srt_path)
         return data
+
+def translate_srt(srt_data: bytes, src: str = "it", dest: str = "en") -> bytes:
+    """
+    Translate an SRT (bytes) from src→dest and return new SRT bytes.
+    """
+    text = srt_data.decode("utf-8", errors="ignore")
+    blocks = text.strip().split("\n\n")
+    translator = Translator()
+    new_blocks = []
+
+    for block in blocks:
+        lines = block.split("\n")
+        if len(lines) < 3:
+            continue
+        idx = lines[0]
+        timestamp = lines[1]
+        content = "\n".join(lines[2:])
+        # translate the caption text
+        translated = translator.translate(content, src=src, dest=dest).text
+        new_blocks.append(f"{idx}\n{timestamp}\n{translated}")
+
+    return "\n\n".join(new_blocks).encode("utf-8")
