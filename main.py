@@ -12,12 +12,12 @@ from telegram.ext import (
     CallbackContext,
     DispatcherHandlerStop,
 )
+
 import config
 from utils import (
     search_series,
     get_series_info,
     get_episode_videos,
-    extract_italian_subtitle_url,
     download_subtitles_with_ytdlp,
 )
 
@@ -27,6 +27,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+PAGE_SIZE = 10
 
 
 def start(update: Update, context: CallbackContext):
@@ -50,35 +52,66 @@ def search(update: Update, context: CallbackContext):
     if not series_list:
         return update.message.reply_text(f"🚫 No series found for “{query}”.")
 
-    # Build a map: index → slug, and stash full list
-    series_map = {}
-    buttons = []
-    for i, s in enumerate(series_list):
-        slug = s.get("slug")
-        title = s.get("title") or f"Series {i+1}"
-        if not slug:
-            continue
-        key = str(i)
-        series_map[key] = slug
-        buttons.append([InlineKeyboardButton(title, callback_data=f"series#{key}")])
-
+    # stash and reset pagination
     context.user_data["series_list"] = series_list
-    context.user_data["series_map"]  = series_map
+    context.user_data["series_page"] = 0
 
-    update.message.reply_text(
-        "Select a series:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    _show_series_page(update, context, page=0)
+
+
+def _show_series_page(update_or_query, context: CallbackContext, page: int):
+    series_list = context.user_data["series_list"]
+    total = len(series_list)
+    start = page * PAGE_SIZE
+    end = min(start + PAGE_SIZE, total)
+
+    buttons = []
+    for i in range(start, end):
+        s = series_list[i]
+        key = str(i)
+        buttons.append([
+            InlineKeyboardButton(
+                s.get("title", f"Series {i+1}"),
+                callback_data=f"series_select#{key}"
+            )
+        ])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("« Prev", callback_data=f"series_page#{page-1}"))
+    if end < total:
+        nav.append(InlineKeyboardButton("Next »", callback_data=f"series_page#{page+1}"))
+    if nav:
+        buttons.append(nav)
+
+    markup = InlineKeyboardMarkup(buttons)
+
+    text = "Select a series:"
+    if isinstance(update_or_query, Update):
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    else:
+        update_or_query.edit_message_text(text, reply_markup=markup)
+
+    context.user_data["series_page"] = page
+
+
+def series_page_callback(update: Update, context: CallbackContext):
+    q = update.callback_query
+    q.answer()
+    page = int(q.data.split("#",1)[1])
+    _show_series_page(q, context, page)
 
 
 def series_select_callback(update: Update, context: CallbackContext):
     q = update.callback_query
     q.answer()
-    key = q.data.split("#", 1)[1]
-    series_map = context.user_data.get("series_map", {})
-    slug = series_map.get(key)
-    if not slug:
+    idx = int(q.data.split("#",1)[1])
+    series_list = context.user_data.get("series_list", [])
+    if idx < 0 or idx >= len(series_list):
         return q.edit_message_text("❌ Invalid selection.")
+
+    slug = series_list[idx]["slug"]
+    context.user_data["current_series_idx"] = idx
 
     try:
         info = get_series_info(slug)
@@ -87,95 +120,89 @@ def series_select_callback(update: Update, context: CallbackContext):
         return q.edit_message_text("⚠️ Could not fetch series info.")
 
     title = info.get("title") or slug
-    eps = info.get("episodes") or []
-    if not isinstance(eps, list):
-        eps = []
+    episodes = info.get("episodes") or []
+    context.user_data["episode_list"] = episodes
+    context.user_data["episode_page"] = 0
 
-    if not eps:
-        return q.edit_message_text(f"No episodes for **{title}**.", parse_mode="Markdown")
+    _show_episode_page(q, context, title, page=0)
 
-    # Build episode map
-    ep_map = {}
+
+def _show_episode_page(query, context: CallbackContext, title: str, page: int):
+    episodes = context.user_data["episode_list"]
+    total = len(episodes)
+    start = page * PAGE_SIZE
+    end = min(start + PAGE_SIZE, total)
+
     buttons = []
-    for i, ep in enumerate(eps):
-        ep_slug = ep.get("ep_slug")
-        num     = ep.get("episode_number") or (i + 1)
-        label   = ep.get("title") or f"Episode {num}"
-        if not ep_slug:
-            continue
+    for i in range(start, end):
+        ep = episodes[i]
         key = str(i)
-        ep_map[key] = ep_slug
-        buttons.append([InlineKeyboardButton(label, callback_data=f"episode#{key}")])
+        label = ep.get("title") or f"Episode {ep.get('episode_number', i+1)}"
+        buttons.append([
+            InlineKeyboardButton(label, callback_data=f"episode_select#{key}")
+        ])
 
-    # Add a Back button
-    buttons.append([InlineKeyboardButton("« Back", callback_data="back_to_series")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("« Prev", callback_data=f"episode_page#{page-1}"))
+    if end < total:
+        nav.append(InlineKeyboardButton("Next »", callback_data=f"episode_page#{page+1}"))
+    # Back to series list
+    nav.append(InlineKeyboardButton("« Back", callback_data="back_to_series"))
+    if nav:
+        buttons.append(nav)
 
-    context.user_data["ep_map"] = ep_map
+    markup = InlineKeyboardMarkup(buttons)
+    text = f"**{title}**\nSelect an episode:"
+    query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
 
-    q.edit_message_text(
-        f"**{title}**\nSelect an episode:",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown"
-    )
+    context.user_data["episode_page"] = page
+
+
+def episode_page_callback(update: Update, context: CallbackContext):
+    q = update.callback_query
+    q.answer()
+    page = int(q.data.split("#",1)[1])
+    title = context.user_data.get("series_list")[context.user_data.get("current_series_idx")].get("title")
+    _show_episode_page(q, context, title, page)
 
 
 def back_to_series_callback(update: Update, context: CallbackContext):
     q = update.callback_query
     q.answer()
-
-    series_list = context.user_data.get("series_list", [])
-    series_map  = context.user_data.get("series_map", {})
-
-    if not series_list:
-        return q.edit_message_text("⚠️ No previous search to go back to.")
-
-    buttons = []
-    for i, s in enumerate(series_list):
-        key = str(i)
-        title = s.get("title") or f"Series {i+1}"
-        buttons.append([InlineKeyboardButton(title, callback_data=f"series#{key}")])
-
-    q.edit_message_text(
-        "Select a series:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    page = context.user_data.get("series_page", 0)
+    _show_series_page(q, context, page)
 
 
-def episode_callback(update: Update, context: CallbackContext):
+def episode_select_callback(update: Update, context: CallbackContext):
     q = update.callback_query
     q.answer()
-    key = q.data.split("#", 1)[1]
-    ep_map = context.user_data.get("ep_map", {})
-    ep_slug = ep_map.get(key)
-    if not ep_slug:
+    idx = int(q.data.split("#",1)[1])
+    episodes = context.user_data.get("episode_list", [])
+    if idx < 0 or idx >= len(episodes):
         return q.edit_message_text("❌ Invalid selection.")
 
+    ep_slug = episodes[idx]["ep_slug"]
     try:
         servers = get_episode_videos(ep_slug)
     except Exception as e:
         logger.error("Episode videos error: %s", e)
         return q.edit_message_text("⚠️ Could not fetch episode video links.")
 
-    # Filter for the All Sub Player Dailymotion server
     selected = next(
-        (s for s in servers
-         if s["server_name"].lower().startswith("all sub player dailymotion")),
+        (s for s in servers if s["server_name"].lower().startswith("all sub player dailymotion")),
         None
     )
     if not selected:
         return q.edit_message_text("🚫 Dailymotion server not available.")
 
     video_url = selected["video_url"]
-    wrapper   = selected.get("embed_url") or selected.get("iframe_src") or video_url
-
-    # 1) Send the video link
     q.message.reply_text(f"🎬 Video (Dailymotion)\n{video_url}")
 
-    # 2) Download subtitles via yt-dlp fallback
+    # subtitle via yt-dlp
     data = download_subtitles_with_ytdlp(video_url, lang="it")
     if not data:
         return q.message.reply_text("⚠️ Italian subtitles not found.")
-
     buf = io.BytesIO(data)
     buf.name = "italian_subtitles.srt"
     q.message.reply_document(
@@ -198,9 +225,14 @@ def main():
 
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("search", search))
+
+    dp.add_handler(CallbackQueryHandler(series_page_callback, pattern=r"^series_page#"))
+    dp.add_handler(CallbackQueryHandler(series_select_callback, pattern=r"^series_select#"))
+
+    dp.add_handler(CallbackQueryHandler(episode_page_callback, pattern=r"^episode_page#"))
     dp.add_handler(CallbackQueryHandler(back_to_series_callback, pattern=r"^back_to_series$"))
-    dp.add_handler(CallbackQueryHandler(series_select_callback, pattern=r"^series#"))
-    dp.add_handler(CallbackQueryHandler(episode_callback, pattern=r"^episode#"))
+    dp.add_handler(CallbackQueryHandler(episode_select_callback, pattern=r"^episode_select#"))
+
     dp.add_error_handler(error_handler)
 
     updater.start_polling()
