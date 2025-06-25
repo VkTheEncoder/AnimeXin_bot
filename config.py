@@ -1,7 +1,7 @@
 # config.py
 
 # URL where your animexin_api is running:
-API_URL = "https://animexin-api-ckkv.onrender.com"
+API_URL = "https://animexin-api-qt2t.onrender.com"
 
 # Your Telegram bot token (replace with your real token or
 # set via env var and read here)
